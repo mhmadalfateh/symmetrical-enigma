@@ -11,45 +11,69 @@ permissions:
 
 jobs:
   build:
-    name: Build Android APK
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
-      # تنزيل ملفات التطبيق
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # تثبيت Java
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # تثبيت Android SDK
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Install unzip
+        run: sudo apt-get update && sudo apt-get install -y unzip
 
-      # الموافقة على تراخيص Android
-      - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses
-
-      # إنشاء مشروع Android
-      - name: Create Android project
+      - name: Extract original ZIP automatically
         shell: bash
         run: |
           set -e
 
-          mkdir -p app/src/main/assets
-          mkdir -p app/src/main/java/com/mustawda/app
+          mkdir -p extracted
 
-          if [ ! -f index.html ]; then
-            echo "ERROR: index.html not found in repository root"
+          ZIP_FILE=$(find . -maxdepth 1 -type f -iname "*.zip" | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No ZIP file found in repository root."
+            echo "Upload your original application ZIP to the repository first."
             exit 1
           fi
 
-          cp index.html app/src/main/assets/index.html
+          echo "Extracting: $ZIP_FILE"
+          unzip -oq "$ZIP_FILE" -d extracted
+
+          echo "Files extracted:"
+          find extracted -maxdepth 3 -type f | head -100
+
+          HTML_FILE=$(find extracted -type f -iname "index.html" | head -n 1)
+
+          if [ -z "$HTML_FILE" ]; then
+            echo "ERROR: index.html not found inside ZIP."
+            exit 1
+          fi
+
+          echo "Found application: $HTML_FILE"
+
+          mkdir -p app/src/main/assets
+
+          cp -a "$(dirname "$HTML_FILE")/." app/src/main/assets/
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android licenses
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Create Android project
+        shell: bash
+        run: |
+          mkdir -p app/src/main/java/com/mustawda/app
 
           cat > settings.gradle <<'EOF'
           pluginManagement {
@@ -99,12 +123,11 @@ jobs:
 
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-
               <uses-permission android:name="android.permission.INTERNET" />
 
               <application
-                  android:theme="@android:style/Theme.Material.Light.NoActionBar"
                   android:label="مستودع البضاعة"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar"
                   android:usesCleartextTraffic="true">
 
                   <activity
@@ -112,8 +135,8 @@ jobs:
                       android:exported="true">
 
                       <intent-filter>
-                          <action android:name="android.intent.action.MAIN" />
-                          <category android:name="android.intent.category.LAUNCHER" />
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
                       </intent-filter>
 
                   </activity>
@@ -127,15 +150,11 @@ jobs:
           import android.app.Activity;
           import android.os.Bundle;
           import android.webkit.WebView;
-          import android.webkit.WebViewClient;
-          import android.webkit.WebChromeClient;
           import android.webkit.WebSettings;
-          import android.webkit.WebResourceRequest;
-          import android.content.Intent;
-          import android.net.Uri;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebViewClient;
 
           public class MainActivity extends Activity {
-
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
@@ -145,60 +164,25 @@ jobs:
                   WebSettings settings = webView.getSettings();
                   settings.setJavaScriptEnabled(true);
                   settings.setDomStorageEnabled(true);
+                  settings.setAllowFileAccess(true);
 
-                  webView.setWebViewClient(new WebViewClient() {
-                      @Override
-                      public boolean shouldOverrideUrlLoading(
-                              WebView view,
-                              WebResourceRequest request) {
-
-                          Uri uri = request.getUrl();
-                          String scheme = uri.getScheme();
-
-                          if (scheme != null &&
-                              !scheme.equals("file") &&
-                              !scheme.equals("https") &&
-                              !scheme.equals("http") &&
-                              !scheme.equals("about")) {
-                              try {
-                                  startActivity(new Intent(
-                                      Intent.ACTION_VIEW, uri));
-                              } catch (Exception ignored) {
-                              }
-                              return true;
-                          }
-
-                          return false;
-                      }
-                  });
-
+                  webView.setWebViewClient(new WebViewClient());
                   webView.setWebChromeClient(new WebChromeClient());
 
                   setContentView(webView);
                   webView.loadUrl("file:///android_asset/index.html");
               }
-
-              @Override
-              public void onBackPressed() {
-                  WebView webView = (WebView)
-                      findViewById(android.R.id.content).getRootView();
-
-                  super.onBackPressed();
-              }
           }
           EOF
 
-      # إنشاء Gradle Wrapper
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      # بناء APK
       - name: Build APK
         run: gradle assembleDebug
 
-      # حفظ APK حتى تتمكن من تنزيله
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
